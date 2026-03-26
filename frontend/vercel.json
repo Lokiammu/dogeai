@@ -1,0 +1,12 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+  "rewrites": [
+    { "source": "/graph", "destination": "https://your-backend.railway.app/graph" },
+    { "source": "/graph/(.*)", "destination": "https://your-backend.railway.app/graph/$1" },
+    { "source": "/query", "destination": "https://your-backend.railway.app/query" },
+    { "source": "/chat/(.*)", "destination": "https://your-backend.railway.app/chat/$1" },
+    { "source": "/health", "destination": "https://your-backend.railway.app/health" }
+  ]
+}
