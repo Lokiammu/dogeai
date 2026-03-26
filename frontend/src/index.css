@@ -2,6 +2,7 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* Cache Buster Comment - 2026-03-26 */
 :root {
   --bg: #fafbfe;
   --bg-panel: #ffffff;
