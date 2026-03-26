@@ -1,7 +1,7 @@
 """Chat message persistence model."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -22,5 +22,5 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text)
     sql_query: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(UTC), index=True
+        DateTime, default=lambda: datetime.utcnow(), index=True
     )
