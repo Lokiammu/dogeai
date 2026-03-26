@@ -9,6 +9,7 @@ Flow:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -28,7 +29,27 @@ settings = get_settings()
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=settings.openrouter_api_key,
+    max_retries=5,
+    timeout=60.0,
 )
+
+
+async def _llm_call_with_retry(messages: list[dict], **kwargs) -> object:
+    """Call the LLM with manual retry + exponential backoff for rate limits."""
+    max_attempts = 4
+    for attempt in range(max_attempts):
+        try:
+            return await client.chat.completions.create(
+                model=MODEL, messages=messages, **kwargs,
+            )
+        except Exception as exc:
+            exc_name = type(exc).__name__
+            if "RateLimit" in exc_name and attempt < max_attempts - 1:
+                wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                logger.warning("Rate limited (attempt %d/%d), retrying in %ds…", attempt + 1, max_attempts, wait)
+                await asyncio.sleep(wait)
+            else:
+                raise
 
 MODEL = "arcee-ai/trinity-large-preview:free"
 
@@ -174,8 +195,8 @@ async def generate_sql(
 
     messages.append({"role": "user", "content": f"Question: {question}"})
 
-    response = await client.chat.completions.create(
-        model=MODEL, messages=messages, temperature=0.1, max_tokens=1024,
+    response = await _llm_call_with_retry(
+        messages, temperature=0.1, max_tokens=1024,
     )
     raw_text = response.choices[0].message.content.strip()
 
@@ -192,8 +213,8 @@ async def generate_sql(
         "content": 'Please respond with valid JSON only: {"sql": "...", "explanation": "..."}',
     })
 
-    response = await client.chat.completions.create(
-        model=MODEL, messages=messages, temperature=0.0, max_tokens=1024,
+    response = await _llm_call_with_retry(
+        messages, temperature=0.0, max_tokens=1024,
     )
     return json.loads(_extract_json(response.choices[0].message.content.strip()))
 
@@ -273,9 +294,8 @@ async def execute_and_answer(
     )
 
     try:
-        answer_response = await client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": answer_input}],
+        answer_response = await _llm_call_with_retry(
+            [{"role": "user", "content": answer_input}],
             temperature=0.2,
             max_tokens=1024,
         )
