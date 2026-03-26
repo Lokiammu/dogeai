@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # Database
+  db:
+    image: postgres:15-alpine
+    container_name: doge_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: doge_postgres_password
+      POSTGRES_DB: o2c
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend
+  backend:
+    build: 
+      context: ./backend
+    container_name: doge_backend
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:doge_postgres_password@db:5432/o2c
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - CORS_ORIGINS=*
+      - DATA_DIR=./sap-o2c-data
+    depends_on:
+      db:
+        condition: service_healthy
+    # Using internal network, no need to expose port 8000 externally since Nginx proxies it
+
+  # React Frontend + Nginx
+  frontend:
+    build:
+      context: ./frontend
+    container_name: doge_frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
