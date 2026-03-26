@@ -2,8 +2,8 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
-/* Cache Buster Comment - 2026-03-26 */
 :root {
+  --cache-buster: "v2-2026";
   --bg: #fafbfe;
   --bg-panel: #ffffff;
   --bg-hover: #f0f2f8;

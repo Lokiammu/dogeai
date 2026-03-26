@@ -1,4 +1,4 @@
-// Cache Buster Comment - 2026-03-26
+console.log('App loaded v2');
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
 
