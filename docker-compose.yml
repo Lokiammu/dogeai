@@ -26,11 +26,12 @@ services:
       context: ./backend
     container_name: doge_backend
     restart: always
+    env_file:
+      - ./backend/.env
     environment:
+      # Override DATABASE_URL to point to the Docker DB service instead of localhost
       - DATABASE_URL=postgresql+asyncpg://postgres:doge_postgres_password@db:5432/o2c
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - CORS_ORIGINS=*
-      - DATA_DIR=./sap-o2c-data
     depends_on:
       db:
         condition: service_healthy
