@@ -49,10 +49,22 @@ const INSPECTOR_HIDDEN_KEYS = new Set([
 /** Delay between each animation step (ms). */
 const ANIMATION_STEP_MS = 400
 
+/** Generate a UUID v4 that works in both HTTP and HTTPS contexts. */
+function generateUUID() {
+  // crypto.randomUUID is only available in Secure Contexts (HTTPS).
+  // Fallback to crypto.getRandomValues for plain HTTP deployments.
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+  )
+}
+
 function getSessionId() {
   let id = sessionStorage.getItem('o2c_session')
   if (!id) {
-    id = crypto.randomUUID()
+    id = generateUUID()
     sessionStorage.setItem('o2c_session', id)
   }
   return id
