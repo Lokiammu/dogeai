@@ -669,6 +669,60 @@ body {
   cursor: not-allowed;
 }
 
+/* ===== QUERY TRAVERSAL INDICATOR ===== */
+.traversal-indicator {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  background: rgba(10, 10, 30, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(100, 220, 255, 0.3);
+  border-radius: 24px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64dcff;
+  letter-spacing: 0.3px;
+  box-shadow: 0 0 20px rgba(100, 220, 255, 0.15),
+              inset 0 0 20px rgba(100, 220, 255, 0.05);
+  animation: traversal-fade-in 0.4s ease-out;
+}
+
+@keyframes traversal-fade-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.traversal-pulse {
+  width: 8px;
+  height: 8px;
+  background: #64dcff;
+  border-radius: 50%;
+  box-shadow: 0 0 8px #64dcff;
+  animation: traversal-glow 0.8s ease-in-out infinite;
+}
+
+@keyframes traversal-glow {
+  0%, 100% { transform: scale(0.8); opacity: 0.5; box-shadow: 0 0 4px #64dcff; }
+  50% { transform: scale(1.2); opacity: 1; box-shadow: 0 0 12px #64dcff, 0 0 24px rgba(100, 220, 255, 0.3); }
+}
+
+.traversal-count {
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 500;
+}
+
+/* Animating status dot in chat panel */
+.status-dot.animating {
+  background: #64dcff;
+  box-shadow: 0 0 6px #64dcff;
+  animation: traversal-glow 0.8s ease-in-out infinite;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }

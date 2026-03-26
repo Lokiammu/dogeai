@@ -25,6 +25,17 @@ const NODE_SIZES = {
   Product: 4,
 }
 
+/** O2C flow priority — lower = earlier in the traversal order. */
+const TYPE_ORDER = {
+  Customer: 0,
+  SalesOrder: 1,
+  Product: 2,
+  Delivery: 3,
+  BillingDoc: 4,
+  JournalEntry: 5,
+  Payment: 6,
+}
+
 /** Lower-detail node types that can be toggled off for a cleaner view. */
 const GRANULAR_TYPES = new Set(['JournalEntry', 'Payment', 'Product'])
 
@@ -33,6 +44,9 @@ const INSPECTOR_HIDDEN_KEYS = new Set([
   'x', 'y', 'vx', 'vy', 'fx', 'fy',
   'index', '__indexColor', 'nodeType', 'label', 'type',
 ])
+
+/** Delay between each animation step (ms). */
+const ANIMATION_STEP_MS = 400
 
 function getSessionId() {
   let id = sessionStorage.getItem('o2c_session')
@@ -48,6 +62,64 @@ function renderMarkdown(text) {
   return text?.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') || ''
 }
 
+/**
+ * Build an ordered traversal path from matched node IDs.
+ * Walks the graph edges outward from each matched node using BFS,
+ * then sorts the full set by O2C flow order so the animation
+ * lights up Customer → SalesOrder → Delivery → … naturally.
+ */
+function buildTraversalPath(matchedIds, nodes, links) {
+  // Build adjacency list
+  const adj = {}
+  const linkMap = {}  // "srcId|tgtId" → link index
+  links.forEach((l, i) => {
+    const s = typeof l.source === 'object' ? l.source.id : l.source
+    const t = typeof l.target === 'object' ? l.target.id : l.target
+    if (!adj[s]) adj[s] = []
+    if (!adj[t]) adj[t] = []
+    adj[s].push(t)
+    adj[t].push(s)
+    linkMap[`${s}|${t}`] = i
+    linkMap[`${t}|${s}`] = i
+  })
+
+  // BFS from matched nodes — collect 1-hop neighbours too
+  const allIds = new Set(matchedIds)
+  matchedIds.forEach(id => {
+    (adj[id] || []).forEach(neighbour => allIds.add(neighbour))
+  })
+
+  // Build a node type lookup
+  const nodeTypeMap = {}
+  nodes.forEach(n => { nodeTypeMap[n.id] = n.nodeType || 'Product' })
+
+  // Sort nodes by O2C flow order for animation sequence
+  const sorted = [...allIds].sort((a, b) => {
+    const orderA = TYPE_ORDER[nodeTypeMap[a]] ?? 99
+    const orderB = TYPE_ORDER[nodeTypeMap[b]] ?? 99
+    return orderA - orderB
+  })
+
+  // Build steps: each step adds one node + the link connecting it to a previous node
+  const steps = []
+  const visited = new Set()
+  for (const nodeId of sorted) {
+    const step = { nodeId, linkIdx: null }
+    // Find a link connecting this node to any already-visited node
+    for (const prev of visited) {
+      const key = `${prev}|${nodeId}`
+      if (linkMap[key] !== undefined) {
+        step.linkIdx = linkMap[key]
+        break
+      }
+    }
+    steps.push(step)
+    visited.add(nodeId)
+  }
+
+  return steps
+}
+
 // =========================================================================
 // Main application component
 // =========================================================================
@@ -55,6 +127,8 @@ function renderMarkdown(text) {
 export default function App() {
   const graphRef = useRef(null)
   const chatEndRef = useRef(null)
+  const animTimerRef = useRef(null)
+  const pulseTimerRef = useRef(null)
   const sessionId = useMemo(() => getSessionId(), [])
 
   // --- State ---------------------------------------------------------------
@@ -66,12 +140,42 @@ export default function App() {
   const [minimized, setMinimized] = useState(false)
   const [showGranular, setShowGranular] = useState(true)
 
+  // Animation state
+  const [animatingNodes, setAnimatingNodes] = useState(new Set())
+  const [animatingLinks, setAnimatingLinks] = useState(new Set())
+  const [activeAnimNode, setActiveAnimNode] = useState(null)  // the node currently pulsing
+  const [isAnimating, setIsAnimating] = useState(false)
+  const [pulsePhase, setPulsePhase] = useState(0)
+
   const [messages, setMessages] = useState([{
     role: 'assistant',
     content: 'Hi! I can help you analyze the **Order to Cash** process. Ask me anything about customers, orders, deliveries, invoices, or payments.',
   }])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+
+  // --- Pulse animation (runs during traversal) -----------------------------
+  useEffect(() => {
+    if (!activeAnimNode) {
+      if (pulseTimerRef.current) cancelAnimationFrame(pulseTimerRef.current)
+      return
+    }
+    const start = performance.now()
+    const animate = (now) => {
+      setPulsePhase(((now - start) % 800) / 800) // 0→1 over 800ms
+      pulseTimerRef.current = requestAnimationFrame(animate)
+    }
+    pulseTimerRef.current = requestAnimationFrame(animate)
+    return () => { if (pulseTimerRef.current) cancelAnimationFrame(pulseTimerRef.current) }
+  }, [activeAnimNode])
+
+  // Cleanup animation timer on unmount
+  useEffect(() => {
+    return () => {
+      if (animTimerRef.current) clearInterval(animTimerRef.current)
+      if (pulseTimerRef.current) cancelAnimationFrame(pulseTimerRef.current)
+    }
+  }, [])
 
   // --- Data fetching -------------------------------------------------------
   useEffect(() => {
@@ -128,35 +232,80 @@ export default function App() {
     setSelectedNode(null)
     setHighlightNodes(new Set())
     setHighlightLinks(new Set())
+    setAnimatingNodes(new Set())
+    setAnimatingLinks(new Set())
+    setActiveAnimNode(null)
+    setIsAnimating(false)
+    if (animTimerRef.current) clearInterval(animTimerRef.current)
   }, [])
 
-  /** Highlight graph nodes that match query results. */
-  const highlightQueryResults = useCallback((results) => {
+  /**
+   * Animate query traversal — lights up nodes one-by-one along the
+   * O2C flow, then leaves them all highlighted at the end.
+   */
+  const animateQueryPath = useCallback((results) => {
     if (!results?.length || !graphRef.current) return
-    const ids = new Set()
+
+    // 1. Find matching node IDs from query results
+    const matchedIds = new Set()
     results.forEach(row => {
       Object.values(row).forEach(val => {
         if (val == null) return
         const v = String(val)
         graphData.nodes.forEach(n => {
-          if (n.id === v || n.id?.includes(v)) ids.add(n.id)
+          if (n.id === v || n.id?.includes(v)) matchedIds.add(n.id)
         })
       })
     })
-    if (ids.size > 0) {
-      const linkIds = new Set()
-      graphData.links.forEach((l, i) => {
-        const s = typeof l.source === 'object' ? l.source.id : l.source
-        const t = typeof l.target === 'object' ? l.target.id : l.target
-        if (ids.has(s) || ids.has(t)) {
-          ids.add(s)
-          ids.add(t)
-          linkIds.add(i)
-        }
-      })
-      setHighlightNodes(ids)
-      setHighlightLinks(linkIds)
-    }
+    if (matchedIds.size === 0) return
+
+    // 2. Also collect neighbour nodes + connecting links for final highlight
+    const finalNodeIds = new Set(matchedIds)
+    const finalLinkIds = new Set()
+    graphData.links.forEach((l, i) => {
+      const s = typeof l.source === 'object' ? l.source.id : l.source
+      const t = typeof l.target === 'object' ? l.target.id : l.target
+      if (finalNodeIds.has(s) || finalNodeIds.has(t)) {
+        finalNodeIds.add(s)
+        finalNodeIds.add(t)
+        finalLinkIds.add(i)
+      }
+    })
+
+    // 3. Build ordered traversal steps
+    const steps = buildTraversalPath(finalNodeIds, graphData.nodes, graphData.links)
+    if (steps.length === 0) return
+
+    // 4. Start step-by-step animation
+    setIsAnimating(true)
+    setAnimatingNodes(new Set())
+    setAnimatingLinks(new Set())
+    setHighlightNodes(new Set())
+    setHighlightLinks(new Set())
+
+    let stepIdx = 0
+    animTimerRef.current = setInterval(() => {
+      if (stepIdx >= steps.length) {
+        // Animation complete — set final highlight state
+        clearInterval(animTimerRef.current)
+        animTimerRef.current = null
+        setActiveAnimNode(null)
+        setIsAnimating(false)
+        setAnimatingNodes(new Set())
+        setAnimatingLinks(new Set())
+        setHighlightNodes(finalNodeIds)
+        setHighlightLinks(finalLinkIds)
+        return
+      }
+
+      const step = steps[stepIdx]
+      setAnimatingNodes(prev => new Set([...prev, step.nodeId]))
+      setActiveAnimNode(step.nodeId)
+      if (step.linkIdx !== null) {
+        setAnimatingLinks(prev => new Set([...prev, step.linkIdx]))
+      }
+      stepIdx++
+    }, ANIMATION_STEP_MS)
   }, [graphData])
 
   const handleSend = async () => {
@@ -176,7 +325,8 @@ export default function App() {
       setMessages(prev => [...prev, {
         role: 'assistant', content: data.answer, sql: data.sql, results: data.results,
       }])
-      highlightQueryResults(data.results)
+      // Animate the query traversal instead of instant highlight
+      animateQueryPath(data.results)
     } catch {
       setMessages(prev => [...prev, {
         role: 'assistant', content: 'Connection error. Please try again.',
@@ -192,37 +342,63 @@ export default function App() {
     const size = NODE_SIZES[type] || 4
     const isHighlighted = highlightNodes.size > 0 && highlightNodes.has(node.id)
     const isSelected = selectedNode?.id === node.id
+    const isAnimated = animatingNodes.has(node.id)
+    const isActivePulse = activeAnimNode === node.id
 
-    // Glow ring for highlighted / selected nodes
-    if (isHighlighted || isSelected) {
+    // Expanding ripple ring for the node being activated NOW
+    if (isActivePulse) {
+      const rippleRadius = size + 4 + pulsePhase * 14
+      const rippleAlpha = Math.max(0, 0.6 - pulsePhase * 0.6)
+      ctx.beginPath()
+      ctx.arc(node.x, node.y, rippleRadius, 0, 2 * Math.PI)
+      ctx.strokeStyle = color + Math.round(rippleAlpha * 255).toString(16).padStart(2, '0')
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
+
+    // Glow ring for animated / highlighted / selected nodes
+    if (isAnimated || isHighlighted || isSelected) {
       ctx.beginPath()
       ctx.arc(node.x, node.y, size + 4, 0, 2 * Math.PI)
-      ctx.fillStyle = color + '30'
+      if (isAnimated && !isHighlighted) {
+        // Brighter glow during animation
+        ctx.fillStyle = color + '50'
+      } else {
+        ctx.fillStyle = color + '30'
+      }
       ctx.fill()
     }
 
     // Main circle
     ctx.beginPath()
     ctx.arc(node.x, node.y, size, 0, 2 * Math.PI)
-    ctx.fillStyle = isHighlighted || isSelected ? color : color + 'cc'
+    ctx.fillStyle = (isAnimated || isHighlighted || isSelected) ? color : color + 'cc'
     ctx.fill()
 
     // Border
-    ctx.strokeStyle = isHighlighted || isSelected ? '#fff' : color + '60'
-    ctx.lineWidth = isSelected ? 2 : 0.5
+    if (isActivePulse) {
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 2.5
+    } else if (isAnimated || isHighlighted || isSelected) {
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = isSelected ? 2 : 1.5
+    } else {
+      ctx.strokeStyle = color + '60'
+      ctx.lineWidth = 0.5
+    }
     ctx.stroke()
 
-    // Label (visible when zoomed in or node is highlighted)
-    if (globalScale > 1.5 || isHighlighted || isSelected) {
+    // Label (visible when zoomed in or node is active)
+    if (globalScale > 1.5 || isAnimated || isHighlighted || isSelected) {
       const label = node.label || node.id
       const fontSize = Math.max(10 / globalScale, 2)
       ctx.font = `600 ${fontSize}px Inter, sans-serif`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'top'
-      ctx.fillStyle = isHighlighted || isSelected ? '#ffffff' : '#b0b8d0'
+      ctx.fillStyle = (isAnimated || isHighlighted || isSelected) ? '#ffffff' : '#b0b8d0'
       ctx.fillText(label, node.x, node.y + size + 2)
     }
-  }, [highlightNodes, selectedNode])
+  }, [highlightNodes, selectedNode, animatingNodes, activeAnimNode, pulsePhase])
 
   const nodePointerAreaPaint = useCallback((node, color, ctx) => {
     const size = NODE_SIZES[node.nodeType] || 4
@@ -234,15 +410,17 @@ export default function App() {
 
   const linkColor = useCallback((link) => {
     const idx = graphData.links.indexOf(link)
-    return highlightLinks.has(idx)
-      ? 'rgba(120, 180, 255, 1)'
-      : 'rgba(80, 140, 255, 0.35)'
-  }, [highlightLinks, graphData])
+    if (animatingLinks.has(idx)) return 'rgba(100, 220, 255, 1)'
+    if (highlightLinks.has(idx)) return 'rgba(120, 180, 255, 1)'
+    return 'rgba(80, 140, 255, 0.35)'
+  }, [highlightLinks, animatingLinks, graphData])
 
   const linkWidth = useCallback((link) => {
     const idx = graphData.links.indexOf(link)
-    return highlightLinks.has(idx) ? 2.5 : 0.8
-  }, [highlightLinks, graphData])
+    if (animatingLinks.has(idx)) return 3
+    if (highlightLinks.has(idx)) return 2.5
+    return 0.8
+  }, [highlightLinks, animatingLinks, graphData])
 
   // --- Filtered data (toggle granular nodes) --------------------------------
   const filteredData = useMemo(() => {
@@ -340,6 +518,15 @@ export default function App() {
               </div>
             ))}
           </div>
+
+          {/* Query Traversal Indicator */}
+          {isAnimating && (
+            <div className="traversal-indicator">
+              <div className="traversal-pulse" />
+              <span>Tracing query path…</span>
+              <span className="traversal-count">{animatingNodes.size} nodes</span>
+            </div>
+          )}
 
           {/* Node Inspector Card */}
           {selectedNode && (
@@ -445,8 +632,17 @@ export default function App() {
 
           <div className="chat-bottom">
             <div className="chat-status">
-              <span className="status-dot" />
-              Doge AI is awaiting instructions
+              {isAnimating ? (
+                <>
+                  <span className="status-dot animating" />
+                  Tracing query through graph…
+                </>
+              ) : (
+                <>
+                  <span className="status-dot" />
+                  Doge AI is awaiting instructions
+                </>
+              )}
             </div>
             <div className="chat-input-row">
               <textarea
